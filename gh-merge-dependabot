@@ -1,0 +1,73 @@
+#!/bin/bash
+
+set -e
+
+usage()
+{
+  echo "gh merge-dependabot [-n NAME] [--no-push] [--no-pr] [BRANCHES...]"
+  echo "  -n NAME"
+  echo "    Set the name of the generated pull request. Default: \"chore: dependabot version updates\""
+  echo "  --no-push"
+  echo "    Do not push changes to the remote. This implies --no-pr."
+  echo "  --no-pr"
+  echo "    Do not create a pull request."
+  echo "  BRANCHES"
+  echo "    Optional space separated list of branches to combine. If this is not specified the script will use branches for every pull request opened by dependabot."
+  echo "  -h, --help"
+  echo "    Display this message."
+}
+
+while [ "$1" != "" ]
+do
+  case $1 in
+    -n ) shift
+      PR_NAME=$1
+      ;;
+    --no-push ) NO_PUSH="true"
+      ;;
+    --no-pr ) NO_PR="true"
+      ;;
+    -h | --help ) usage
+      exit
+      ;;
+    * ) BRANCHES="$BRANCHES $1"
+      ;;
+  esac
+  shift
+done
+
+if [ -z "$BRANCHES" ]; then
+  BRANCHES=$(gh pr list -S 'author:app/dependabot' --json headRefName -q '.[].headRefName')
+  if [ -z "$BRANCHES" ]; then
+    echo "No dependabot pull requests found"
+    exit 1
+  fi
+
+  echo "Found the following open dependabot pull requests:"
+  echo "$BRANCHES"
+  read -rsn1 -p "Press any key to continue..."
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+
+repo=$(echo "$(git config --get remote.origin.url)" | sed 's|^.*:||' | sed 's|^github.com/||' | sed 's|.git$||')
+default_branch="$(gh api "repos/$repo" -q '.default_branch')"
+git checkout "$default_branch" && git pull
+
+git checkout -b chore/combined-dependabot-pr
+
+git pull origin $(echo $BRANCHES | xargs) --no-edit
+
+if [ -z "$NO_PUSH" ]; then
+  git push --set-upstream origin chore/combined-dependabot-pr
+
+  if [ -z "$NO_PR" ]; then
+    if [ -z "$PR_NAME" ]; then
+      PR_NAME="chore: dependabot version updates"
+    fi
+    gh pr create --title "$PR_NAME" --body "This pull request was generated from the following branches:
+
+$(echo "$BRANCHES" | xargs | tr ' ' '\n' | sed 's/^/* /')"
+  fi
+fi
+
